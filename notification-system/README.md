@@ -1,4 +1,4 @@
-# A notification system
+# A Notification System
 
 A notification keeps users informed with crucial updates such as breaking news, product announcements, events, and promotions. It has become an essential part of our daily lives.
 
@@ -43,145 +43,159 @@ devices.
 
 ### Shows the design after including all the third-party services
 
-<p align="center" width="100%">
 ![High level overview push notification](images/high-level-overview.png "")
-</p>
 
+## Contact info gathering flow
 
+In order to send notifications, we must collect mobile device tokens, phone numbers, or email addresses. When a user installs our app or registers for the first time, the API servers gather the user's contact information and store it in the database.
 
+![Gather user info](images/gather-info.png "")
 
+The database has simplified tables for storing contact information. Email addresses and phone numbers are kept in the user table, while device tokens are stored in the device table. Since a user can have multiple devices, push notifications can be sent to all of them.
 
+![DB diagram](images/user_devices_db_diagram.png "")
 
+## High-level design
 
-The file explorer is accessible using the button in left corner of the navigation bar. You can create a new file by clicking the **New file** button in the file explorer. You can also create folders by clicking the **New folder** button.
+The details of each system component are outlined below.
 
-## Switch to another file
+![High level design](images/high-level-design-0.png "")
 
-All your files and folders are presented as a tree in the file explorer. You can switch from one to another by clicking a file in the tree.
+**Service 1 to N**: A service can take the form of a microservice, a scheduled cron job, or a distributed system that initiates notification-sending events. For example, a billing service sends emails to remind customers about their upcoming subscription payments or a shopping service sends notifications to inform them that their package is on the way.
 
-## Rename a file
+**Notification system**: The notification system is the core component for sending notifications. Initially, a single notification server is utilized, offering APIs for services 1 through N and generating notification payloads for third-party services.
 
-You can rename the current file by clicking the file name in the navigation bar or by clicking the **Rename** button in the file explorer.
+**Third party services**: Third-party services handle the delivery of notifications to users. When integrating with these services, it's essential to prioritize extensibility. A well-designed extensible system allows for easy addition or removal of third-party services. Another key consideration is the potential unavailability of certain third-party services in new markets or in the future. For example, FCM is unavailable in China, so alternative services like JPush, PushY, and others are used in such regions.
 
-## Delete a file
+**iOS, Android, SMS, Email**: Users receive notifications on their devices.
 
-You can delete the current file by clicking the **Remove** button in the file explorer. The file will be moved into the **Trash** folder and automatically deleted after 7 days of inactivity.
+**Disadvantages**:
+- Single point of failure (SPOF): A single notification server means SPOF.
+- Hard to scale: The notification system manages all aspects of push notifications within a single server. This setup makes it difficult to scale databases, caches, and various notification processing components independently.
+- Performace bottleneck: Processing and sending notifications can be resource-intensive. Actions like sending emails using HTML templates and waiting for responses from third-party services may take time. Handling all these tasks within a single system may cause overload, especially during peak periods.
 
-## Export a file
+## High-level design (improved)
 
-You can export the current file by clicking **Export to disk** in the menu. You can choose to export the file as plain Markdown, as HTML using a Handlebars template or as a PDF.
+After identifying the challenges in the initial design, we have made the following improvements.
+- Separate the database and cache out of notification server.
+- Add more notification servers and setup auotmatic horizontal scaling.
+- Implement the message queue to decouple the third party service.
 
+![High level design (improved)](images/high-level-design.png "")
 
-# Synchronization
+The ideal way to examine the diagram is starting on the left and moving to the right
 
-Synchronization is one of the biggest features of StackEdit. It enables you to synchronize any file in your workspace with other files stored in your **Google Drive**, your **Dropbox** and your **GitHub** accounts. This allows you to keep writing on other devices, collaborate with people you share the file with, integrate easily into your workflow... The synchronization mechanism takes place every minute in the background, downloading, merging, and uploading file modifications.
+**Service 1 to N**: They represent various services that send notifications through APIs provided by the notification servers.
 
-There are two types of synchronization and they can complement each other:
+**Notification Servers**: They offer the following functionalities:
 
-- The workspace synchronization will sync all your files, folders and settings automatically. This will allow you to fetch your workspace on any other device.
-	> To start syncing your workspace, just sign in with Google in the menu.
+- Provide APIs for services to send notifications, with access restricted to internal or verified clients to prevent spam.
+- Perform basic validations, such as verifying emails, phone numbers, and other required data.
+- Query databases or caches to retrieve the information necessary for rendering notifications. 
+- Enqueue notification data into message queues for parallel processing.
 
-- The file synchronization will keep one file of the workspace synced with one or multiple files in **Google Drive**, **Dropbox** or **GitHub**.
-	> Before starting to sync files, you must link an account in the **Synchronize** sub-menu.
+**Cache**: User info, device info, notification templates are cached.
 
-## Open a file
+**Database**: It stores data about user information, notification, settings, etc.
 
-You can open a file from **Google Drive**, **Dropbox** or **GitHub** by opening the **Synchronize** sub-menu and clicking **Open from**. Once opened in the workspace, any modification in the file will be automatically synced.
+**Message queue**: They eliminate dependencies between components. Message queues act as buffers when handling large volumes of notifications. Each notification type is assigned its own message queue, ensuring that an outage in one third-party service does not impact other notification types.
 
-## Save a file
+**Worker**: Workers are a group of servers that retrieve notification events from message queues and forward them to the appropriate third-party services. If an error occurs, the worker will reinsert the payload into the message queue for reprocessing from the start.
 
-You can save any file of the workspace to **Google Drive**, **Dropbox** or **GitHub** by opening the **Synchronize** sub-menu and clicking **Save on**. Even if a file in the workspace is already synced, you can save it to another location. StackEdit can sync one file with multiple locations and accounts.
+**Third-party services**: Already explained in the initial design.
 
-## Synchronize a file
+**iOS, Android, SMS, Email**: Already explained in the initial design.
 
-Once your file is linked to a synchronized location, StackEdit will periodically synchronize it by downloading/uploading any modification. A merge will be performed if necessary and conflicts will be resolved.
+**Flow**: Let's now look at how all the components work together to send a notification:
+- A service calls the APIs provided by the notification servers to trigger a notification.
+- The notification servers retrieve metadata, such as user information, device tokens, and notification settings, from the cache or database.
+- A notification event is placed in the appropriate queue for processing. For example, an iOS push notification event is sent to the iOS queue.
+- Workers pull notification events from the message queues.
+- Workers then send the notifications to third-party services.
+- The third-party services deliver the notifications to the user devices.
 
-If you just have modified your file and you want to force syncing, click the **Synchronize now** button in the navigation bar.
+## Design deep dive
+In the high-level design, we covered various notification types, the process of gathering contact information, and the flow of sending and receiving notifications. In the deep dive, we will explore the following:
+- Reliability.
+- Additional components and considerations, such as notification templates, notification settings, rate limiting, retry mechanisms, security in push notifications, monitoring queued notifications, and event tracking.
+- Updated design.
 
-> **Note:** The **Synchronize now** button is disabled if you have no file to synchronize.
+### Reliability
+When designing a notification system for distributed environments, we need to consider several critical reliability factors
 
-## Manage file synchronization
+**How to prevent data loss?**
+One of the key requirements of a notification system is that it must not lose data. While notifications can typically be delayed or sent out of order, they must never be lost. To meet this requirement, the system stores notification data in a database and incorporates a retry mechanism. A notification log database is used to ensure data persistence.
 
-Since one file can be synced with multiple locations, you can list and manage synchronized locations by clicking **File synchronization** in the **Synchronize** sub-menu. This allows you to list and remove synchronized locations that are linked to your file.
+![High level design (improved)](images/prevent-data-loss.png "")
 
+**Will recipients receive a notification exactly once?**
 
-# Publication
+The short answer is no. While notifications are usually delivered exactly once, the distributed nature of the system can sometimes lead to duplicates. To minimize duplication, we implement a deduplication mechanism and carefully address each failure scenario. A basic deduplication logic works as follows: when a notification event arrives, we check if the event ID has been encountered before. If it has, the event is discarded; otherwise, the notification is sent. For those interested in why exactly-once delivery isn't guaranteed, please refer to the [link](https://bravenewgeek.com/you-cannot-have-exactly-once-delivery/). 
 
-Publishing in StackEdit makes it simple for you to publish online your files. Once you're happy with a file, you can publish it to different hosting platforms like **Blogger**, **Dropbox**, **Gist**, **GitHub**, **Google Drive**, **WordPress** and **Zendesk**. With [Handlebars templates](http://handlebarsjs.com/), you have full control over what you export.
+### Additional Components and Considerations
+While we've covered how to collect user contact information and send and receive notifications, a complete notification system involves much more. In this section, we’ll explore additional components such as template reuse, notification settings, event tracking, system monitoring, rate limiting, and more.
 
-> Before starting to publish, you must link an account in the **Publish** sub-menu.
+**Notification template**
+A large notification system can dispatch millions of notifications daily, many of which share a similar format. To streamline this process, notification templates are introduced to prevent the need for creating each notification from scratch. A notification template is a preformatted structure that allows you to generate unique notifications by customizing parameters, styling, tracking links, and more. Below is an example template for push notifications.
 
-## Publish a File
+Notification Title:
+Your order has been shipped!
 
-You can publish your file by opening the **Publish** sub-menu and by clicking **Publish to**. For some locations, you can choose between the following formats:
+Notification Body:
+Hi {{userName}}, your order #{{orderNumber}} is on its way! You can track your shipment using the link below.
 
-- Markdown: publish the Markdown text on a website that can interpret it (**GitHub** for instance),
-- HTML: publish the file converted to HTML via a Handlebars template (on a blog for example).
+The advantages of using notification templates include ensuring a consistent format, minimizing errors, and saving time.
 
-## Update a publication
+**Notification settings**
+Users typically receive an excessive number of notifications each day, which can lead to feelings of overwhelm. To address this, many websites and apps provide users with detailed control over their notification settings. This information is stored in the notification settings table, which includes the following fields:
 
-After publishing, StackEdit keeps your file linked to that publication which makes it easy for you to re-publish it. Once you have modified your file and you want to update your publication, click on the **Publish now** button in the navigation bar.
+```
+user_id uuid
+channel varchar # push notification, email or SMS
+opt_in boolean # opt-in to receive notification
+```
 
-> **Note:** The **Publish now** button is disabled if your file has not been published yet.
+Before sending any notification to a user, we first verify whether they have opted in to receive that type of notification.
 
-## Manage file publication
+**Rate Limiting**
+To prevent overwhelming users with excessive notifications, we can impose limits on the number of notifications a user can receive. This is crucial, as frequent notifications may lead users to disable them entirely.
 
-Since one file can be published to multiple locations, you can list and manage publish locations by clicking **File publication** in the **Publish** sub-menu. This allows you to list and remove publication locations that are linked to your file.
+**Retry Mechanism**
+If a third-party service fails to deliver a notification, the notification will be added to the message queue for a retry. If the issue continues, an alert will be sent to the developers.
 
+**Security in Push Notifications**
+For iOS or Android applications, an appKey and appSecret are used to secure push notification APIs. Only authenticated or verified clients are permitted to send push notifications through our APIs. Interested users can refer to the reference material for more information.
 
-# Markdown extensions
+**Monitoring Queued Notifications**
+A key metric to track is the total number of queued notifications. A high number indicates that notification events are not being processed quickly enough by workers. To prevent delays in notification delivery, additional workers may be required.
 
-StackEdit extends the standard Markdown syntax by adding extra **Markdown extensions**, providing you with some nice features.
+**Event tracking**
+Notification metrics, such as open rate, click rate, and engagement, are crucial for understanding customer behavior. The analytics service implements event tracking, which typically requires integration between the notification system and the analytics service. The below diagram illustrates examples of events that may be tracked for analytics purposes.
 
-> **ProTip:** You can disable any **Markdown extension** in the **File properties** dialog.
+![Event tracking](images/event-tracking.png "")
 
+**Update design**
 
-## SmartyPants
+![Update design](images/high-level-design-1.png "")
 
-SmartyPants converts ASCII punctuation characters into "smart" typographic punctuation HTML entities. For example:
+Bringing everything together, this design incorporates several key improvements and features:
 
-|                |ASCII                          |HTML                         |
-|----------------|-------------------------------|-----------------------------|
-|Single backticks|`'Isn't this fun?'`            |'Isn't this fun?'            |
-|Quotes          |`"Isn't this fun?"`            |"Isn't this fun?"            |
-|Dashes          |`-- is en-dash, --- is em-dash`|-- is en-dash, --- is em-dash|
+- Notification servers now include authentication and rate-limiting to control access and prevent overloading users with notifications.
+- A retry mechanism ensures that failed notifications are re-queued and retried by workers a set number of times.
+- Notification templates streamline the creation process by offering a consistent and efficient method for building notifications.
+- Monitoring and tracking systems have been added to monitor system health and track key metrics, enabling future optimizations and improvements.
+These enhancements provide a more robust, scalable, and user-friendly notification system.
 
+## Conclusion
 
-## KaTeX
+Notifications are essential for keeping us updated with important information, whether it's a push notification about your favorite Netflix movie, an email with product discounts, or a message confirming an online shopping payment.
 
-You can render LaTeX mathematical expressions using [KaTeX](https://khan.github.io/KaTeX/):
+We outlined the design of a scalable notification system that supports various formats, including push notifications, SMS messages, and emails. To decouple system components, we employed message queues.
 
-The *Gamma function* satisfying $\Gamma(n) = (n-1)!\quad\forall n\in\mathbb N$ is via the Euler integral
+Beyond the high-level design, we explored additional components and optimizations:
 
-$$
-\Gamma(z) = \int_0^\infty t^{z-1}e^{-t}dt\,.
-$$
-
-> You can find more information about **LaTeX** mathematical expressions [here](http://meta.math.stackexchange.com/questions/5020/mathjax-basic-tutorial-and-quick-reference).
-
-
-## UML diagrams
-
-You can render UML diagrams using [Mermaid](https://mermaidjs.github.io/). For example, this will produce a sequence diagram:
-
-mermaid
-sequenceDiagram
-Alice ->> Bob: Hello Bob, how are you?
-Bob-->>John: How about you John?
-Bob--x Alice: I am good thanks!
-Bob-x John: I am good thanks!
-Note right of John: Bob thinks a long<br/>long time, so long<br/>that the text does<br/>not fit on a row.
-
-Bob-->Alice: Checking with John...
-Alice->John: Yes... John, how are you?
-
-
-And this will produce a flow chart:
-
-mermaid
-graph LR
-A[Square Rect] -- Link text --> B((Circle))
-A --> C(Round Rect)
-B --> D{Rhombus}
-C --> D
-``````
+- Reliability: A robust retry mechanism was introduced to minimize the failure rate.
+- Security: An appKey/appSecret pair is used to ensure that only verified clients can send notifications.
+- Tracking and Monitoring: These features are integrated throughout the notification flow to capture key metrics.
+- User Settings: The system respects user preferences by checking their opt-in status before sending notifications.
+- Rate Limiting: Users will appreciate having a cap on the frequency of notifications they receive, preventing notification overload.

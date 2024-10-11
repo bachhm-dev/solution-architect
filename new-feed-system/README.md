@@ -42,7 +42,7 @@ Headers:
 
 - Web Servers: Forward the traffic to the appropriate internal services.
 
-- Post Service: Saves the post in both the database and cache.
+- Post Service: Saves the post in both the database and cache and upload the media files to the storage such as AWS S3 and cache file on CDN such as AWS CloudFront.
 
 - Fanout Service: Distributes the new post to the News Feeds of the user's friends. The News Feed data is stored in cache for quick access.
 
@@ -64,5 +64,5 @@ Headers:
 
 - News Feed Cache: Stores the necessary News Feed IDs to display the feed.
 
-
+## Feed publishing deep dive
 
